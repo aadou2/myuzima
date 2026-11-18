@@ -61,25 +61,25 @@ def display_number(v, decimals=0):
 def weighted_rate(df):
     population = df.population.sum()
     return df.shot_total.sum() / population * 10000 if population > 0 else np.nan
-
-st.subheader("Neighborhood overview")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Shooting victims", display_number(focus.shot_total.sum()))
-c2.metric("Fatal victims", display_number(focus.fatal.sum()))
-c3.metric("Victims per 10,000", display_number(weighted_rate(focus), 1))
-c4.metric("Population", display_number(focus.population.sum()))
-
-p1, p2, p3 = st.columns(3)
-if area == "All Chicago":
-    p1.metric("Poverty (%)", "Select a neighborhood")
-    p2.metric("Unemployment (%)", "Select a neighborhood")
-    p3.metric("Estimated trauma drive", "Select a neighborhood")
-else:
-    row = focus.iloc[0]
-    p1.metric("Poverty (%)", display_number(row.pct_poverty, 1))
-    p2.metric("Unemployment (%)", display_number(row.pct_unemployed, 1))
-    p3.metric("Estimated trauma drive", display_number(profile.trauma_drive_min, 1) + " min" if pd.notna(profile.trauma_drive_min) else "N/A")
-st.caption("Poverty/unemployment definitions and source years require verification. Trauma drive times are estimates, NOT measured EMS response times.")
+with tab1:
+    st.subheader("Neighborhood overview")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Shooting victims", display_number(focus.shot_total.sum()))
+    c2.metric("Fatal victims", display_number(focus.fatal.sum()))
+    c3.metric("Victims per 10,000", display_number(weighted_rate(focus), 1))
+    c4.metric("Population", display_number(focus.population.sum()))
+    
+    p1, p2, p3 = st.columns(3)
+    if area == "All Chicago":
+        p1.metric("Poverty (%)", "Select a neighborhood")
+        p2.metric("Unemployment (%)", "Select a neighborhood")
+        p3.metric("Estimated trauma drive", "Select a neighborhood")
+    else:
+        row = focus.iloc[0]
+        p1.metric("Poverty (%)", display_number(row.pct_poverty, 1))
+        p2.metric("Unemployment (%)", display_number(row.pct_unemployed, 1))
+        p3.metric("Estimated trauma drive", display_number(profile.trauma_drive_min, 1) + " min" if pd.notna(profile.trauma_drive_min) else "N/A")
+    st.caption("Poverty/unemployment definitions and source years require verification. Trauma drive times are estimates, NOT measured EMS response times.")
 
 st.subheader("Map: shooting burden and hospital locations")
 map_col, side_col = st.columns([1.65, 1], gap="large")
@@ -101,7 +101,78 @@ with map_col:
     if area != "All Chicago":
         fig.update_layout(title={"text": f"Selected community area: {area}", "x": 0.03})
     fig.update_layout(margin={"l": 0, "r": 0, "t": 40, "b": 0})
-    st.plotly_chart(fig, use_container_width=True)
+    map_event = st.plotly_chart(
+    fig,
+    use_container_width=True,
+    on_select="rerun",
+    selection_mode="points",
+    key="chicago_map"
+)
+    selected_points = map_event.selection.points
+
+    if selected_points:
+        point = selected_points[0]
+        selected_ca = point.get("location")
+    
+        if selected_ca is not None:
+            selected_row = current[
+                current["ca_num"].astype(str) == str(selected_ca)
+            ]
+    
+            if not selected_row.empty:
+                selected_data = selected_row.iloc[0]
+                selected_name = selected_data["ca_name"]
+    
+                st.markdown(f"### {selected_name}")
+                st.caption(f"Community area profile — {year}")
+    
+                c1, c2, c3 = st.columns(3)
+    
+                c1.metric(
+                    "Shooting victims",
+                    display_number(selected_data["shot_total"])
+                )
+                c2.metric(
+                    "Fatal victims",
+                    display_number(selected_data["fatal"])
+                )
+                c3.metric(
+                    "Victims per 10,000",
+                    display_number(selected_data["shot_rate_per_10k"], 1)
+                )
+            st.markdown("#### Socioeconomic & Healthcare Profile")
+
+            s1, s2, s3 = st.columns(3)
+
+            s1.metric(
+                "Poverty rate",
+                f"{selected_data['pct_poverty']:.1f}%"
+                if pd.notna(selected_data["pct_poverty"]) else "N/A"
+            )
+
+            s2.metric(
+                "Unemployment rate",
+                f"{selected_data['pct_unemployed']:.1f}%"
+                if pd.notna(selected_data["pct_unemployed"]) else "N/A"
+            )
+
+            selected_profile = profiles[
+                profiles["ca_name"] == selected_name
+            ]
+
+            if not selected_profile.empty:
+                drive_time = selected_profile.iloc[0]["trauma_drive_min"]
+                s3.metric(
+                    "Estimated trauma-center drive",
+                    f"{drive_time:.1f} min" if pd.notna(drive_time) else "N/A"
+                )
+            else:
+                s3.metric("Estimated trauma-center drive", "N/A")
+
+            st.caption(
+                "Socioeconomic indicators describe neighborhood conditions. "
+                "Estimated trauma-center drive time is not actual EMS response time."
+            )
     st.caption("Markers sharing rounded coordinates list all hospitals on hover, including Stroger (Cook County). Verify coordinates before publication.")
 with side_col:
     st.markdown("**Highest shooting-victim rates**")
@@ -120,57 +191,59 @@ fig = px.bar(t.melt(id_vars="year", var_name="Outcome", value_name="Victims"), x
              color="Outcome", barmode="stack", height=320)
 st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("Regression analysis — exploratory")
-st.write("A pooled negative-binomial model examines associations of poverty and unemployment with shooting-victim counts, adjusting for population and calendar year. This model does not prove cause and effect.")
-try:
-    model, model_columns, modeled = fit_model()
-    observed = modeled[modeled.year == year].copy()
-    if area != "All Chicago":
-        observed = observed[observed.ca_name == area]
-    if not observed.empty:
-        actual = observed.shot_total.sum()
-        fitted = observed.model_estimate.sum()
-        r1, r2 = st.columns(2)
-        r1.metric("Observed victims", display_number(actual))
-        r2.metric("Model-estimated victims", display_number(fitted, 1))
-    fig = px.scatter(modeled[modeled.year == year], x="model_estimate", y="shot_total", hover_name="ca_name",
-        labels={"model_estimate": "Model-estimated victims", "shot_total": "Observed victims"}, height=380)
-    maxval = max(modeled.loc[modeled.year == year, ["model_estimate", "shot_total"]].max())
-    fig.add_shape(type="line", x0=0, y0=0, x1=maxval, y1=maxval, line={"dash": "dash", "color": "gray"})
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Model uses fixed negative-binomial dispersion alpha=1 as a starting assumption; it is NOT a validated forecasting model. Predictors may share underlying source periods. Review model diagnostics, source definitions, and temporal dependence before using for decisions.")
-    with st.expander("Model coefficients (exploratory)"):
-        st.dataframe(pd.DataFrame({"Coefficient": model.params.index, "Estimate": model.params.values,
-                                   "P-value": model.pvalues.values}), hide_index=True)
+with tab2:
+    st.subheader("Regression analysis — exploratory")
+    st.write("A pooled negative-binomial model examines associations of poverty and unemployment with shooting-victim counts, adjusting for population and calendar year. This model does not prove cause and effect.")
+    try:
+        model, model_columns, modeled = fit_model()
+        observed = modeled[modeled.year == year].copy()
+        if area != "All Chicago":
+            observed = observed[observed.ca_name == area]
+        if not observed.empty:
+            actual = observed.shot_total.sum()
+            fitted = observed.model_estimate.sum()
+            r1, r2 = st.columns(2)
+            r1.metric("Observed victims", display_number(actual))
+            r2.metric("Model-estimated victims", display_number(fitted, 1))
+        fig = px.scatter(modeled[modeled.year == year], x="model_estimate", y="shot_total", hover_name="ca_name",
+            labels={"model_estimate": "Model-estimated victims", "shot_total": "Observed victims"}, height=380)
+        maxval = max(modeled.loc[modeled.year == year, ["model_estimate", "shot_total"]].max())
+        fig.add_shape(type="line", x0=0, y0=0, x1=maxval, y1=maxval, line={"dash": "dash", "color": "gray"})
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Model uses fixed negative-binomial dispersion alpha=1 as a starting assumption; it is NOT a validated forecasting model. Predictors may share underlying source periods. Review model diagnostics, source definitions, and temporal dependence before using for decisions.")
+        with st.expander("Model coefficients (exploratory)"):
+            st.dataframe(pd.DataFrame({"Coefficient": model.params.index, "Estimate": model.params.values,
+                                       "P-value": model.pvalues.values}), hide_index=True)
+    
+        st.subheader("What-if explorer — model-based illustration")
+        st.caption("Adjusting a variable changes the fitted association only. It does not estimate what an intervention would cause.")
+        chosen = area if area != "All Chicago" else st.selectbox("Choose a neighborhood for scenario", areas)
+        baseline = modeled[(modeled.ca_name == chosen) & (modeled.year == year)]
+        if len(baseline):
+            rec = baseline.iloc[0]
+            s1, s2 = st.columns(2)
+            poverty = s1.slider("Hypothetical poverty (%)", 0.0, 100.0, float(rec.pct_poverty), 0.5)
+            unemployment = s2.slider("Hypothetical unemployment (%)", 0.0, 100.0, float(rec.pct_unemployed), 0.5)
+            x = pd.DataFrame(0.0, index=[0], columns=model_columns)
+            x.loc[0, "const"] = 1.0
+            x.loc[0, "pct_poverty"] = poverty
+            x.loc[0, "pct_unemployed"] = unemployment
+            year_col = "year_" + str(year)
+            if year_col in x:
+                x.loc[0, year_col] = 1.0
+            prediction = float(model.predict(x, offset=np.log([rec.population])).iloc[0])
+            st.metric("Illustrative model-estimated victims", display_number(prediction, 1),
+                      delta=f"{prediction - rec.model_estimate:+.1f} vs baseline estimate")
+    except Exception as exc:
+        st.error(f"Regression could not be fitted: {exc}")
 
-    st.subheader("What-if explorer — model-based illustration")
-    st.caption("Adjusting a variable changes the fitted association only. It does not estimate what an intervention would cause.")
-    chosen = area if area != "All Chicago" else st.selectbox("Choose a neighborhood for scenario", areas)
-    baseline = modeled[(modeled.ca_name == chosen) & (modeled.year == year)]
-    if len(baseline):
-        rec = baseline.iloc[0]
-        s1, s2 = st.columns(2)
-        poverty = s1.slider("Hypothetical poverty (%)", 0.0, 100.0, float(rec.pct_poverty), 0.5)
-        unemployment = s2.slider("Hypothetical unemployment (%)", 0.0, 100.0, float(rec.pct_unemployed), 0.5)
-        x = pd.DataFrame(0.0, index=[0], columns=model_columns)
-        x.loc[0, "const"] = 1.0
-        x.loc[0, "pct_poverty"] = poverty
-        x.loc[0, "pct_unemployed"] = unemployment
-        year_col = "year_" + str(year)
-        if year_col in x:
-            x.loc[0, year_col] = 1.0
-        prediction = float(model.predict(x, offset=np.log([rec.population])).iloc[0])
-        st.metric("Illustrative model-estimated victims", display_number(prediction, 1),
-                  delta=f"{prediction - rec.model_estimate:+.1f} vs baseline estimate")
-except Exception as exc:
-    st.error(f"Regression could not be fitted: {exc}")
-
-st.subheader("Hospital finances — separate 2024 snapshot")
-st.caption("Hospital-wide financial figures, NOT costs attributable to gunshot victims. Not all hospitals are listed.")
-finance_cols = ["hospital", "total_costs", "charity_care_cost", "uncompensated_care_cost"]
-st.dataframe(hospitals[finance_cols].rename(columns={"hospital": "Hospital", "total_costs": "Total costs ($)",
-    "charity_care_cost": "Charity care ($)", "uncompensated_care_cost": "Uncompensated care ($)"}),
-    hide_index=True, use_container_width=True)
+with tab3:
+    st.subheader("Hospital finances — separate 2024 snapshot")
+    st.caption("Hospital-wide financial figures, NOT costs attributable to gunshot victims. Not all hospitals are listed.")
+    finance_cols = ["hospital", "total_costs", "charity_care_cost", "uncompensated_care_cost"]
+    st.dataframe(hospitals[finance_cols].rename(columns={"hospital": "Hospital", "total_costs": "Total costs ($)",
+        "charity_care_cost": "Charity care ($)", "uncompensated_care_cost": "Uncompensated care ($)"}),
+        hide_index=True, use_container_width=True)
 
 with st.expander("Data notes and limitations — read before client presentation"):
     st.write("Shooting counts are victims, not distinct incidents. Rates use supplied population denominators. Socioeconomic variable definitions, ACS/source years, and hospital classifications require verification against primary sources. Estimated travel time is not actual EMS response time. Hospital finances are hospital-wide 2024 figures and are not shooting-specific. Regression is observational, exploratory, and not a causal or validated forecasting model. The dashboard covers the available years, not 2026 shooting data.")
